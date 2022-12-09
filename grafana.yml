@@ -97,7 +97,7 @@ spec:
         - '-openshift-ca=/etc/pki/tls/cert.pem'
         - '-openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'
         - >-
-          -openshift-ca=/etc/grafana-configmaps/openshift-service-ca/service-ca.crt
+          -openshift-ca=/etc/grafana-configmaps/openshift-service-ca/ca-bundle.crt
         - '-skip-auth-regex=^/metrics'
       image: quay.io/openshift/origin-oauth-proxy
       name: grafana-proxy
