@@ -1,0 +1,1027 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: grafana
+  annotations:
+    openshift.io/node-selector: ""
+
+---
+
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: grafana-group
+  namespace: grafana
+spec:
+  targetNamespaces: 
+    - grafana
+
+---
+
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: "grafana-operator"
+  namespace: "grafana"
+spec:
+  channel: "v4"
+  installPlanApproval: "Automatic"
+  source: "community-operators"
+  sourceNamespace: "openshift-marketplace"
+  name: "grafana-operator"
+
+---
+
+apiVersion: integreatly.org/v1alpha1
+kind: Grafana
+metadata:
+  name: grafana-oauth
+  namespace: grafana
+spec:
+  dashboardLabelSelector:
+    - matchExpressions:
+        - {key: type, operator: In, values: ["network"]}
+  config:
+    auth:
+      disable_login_form: false
+      disable_signout_menu: false
+    auth.anonymous:
+      enabled: false
+    auth.basic:
+      enabled: false
+    auth.proxy:
+      enable_login_token: true
+      enabled: true
+      header_name: X-Forwarded-User
+      header_property: username
+    log:
+      level: warn
+      mode: console
+    users:
+      auto_assign_org_role: Admin
+      editors_can_admin: true
+      viewers_can_edit: true
+  secrets:
+    - grafana-tls
+    - grafana-proxy
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 8000Mi
+    requests:
+      cpu: 100m
+      memory: 200Mi
+  client:
+    preferService: true
+  containers:
+    - args:
+        - '-provider=openshift'
+        - '-pass-basic-auth=false'
+        - '-https-address=:9091'
+        - '-http-address='
+        - '-email-domain=*'
+        - '-upstream=http://localhost:3000'
+        - '-openshift-sar={"resource": "namespaces", "verb": "get"}'
+        - >-
+          -openshift-delegate-urls={"/": {"resource": "namespaces", "verb":
+          "get"}}
+        - '-tls-cert=/etc/tls/private/tls.crt'
+        - '-tls-key=/etc/tls/private/tls.key'
+        - >-
+          -client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+        - '-cookie-secret-file=/etc/proxy/secrets/session_secret'
+        - '-openshift-service-account=grafana-serviceaccount'
+        - '-openshift-ca=/etc/pki/tls/cert.pem'
+        - '-openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'
+        - >-
+          -openshift-ca=/etc/grafana-configmaps/openshift-service-ca/service-ca.crt
+        - '-skip-auth-regex=^/metrics'
+      image: quay.io/openshift/origin-oauth-proxy
+      name: grafana-proxy
+      ports:
+        - containerPort: 9091
+          name: https
+          protocol: TCP
+      resources: {}
+      volumeMounts:
+        - mountPath: /etc/tls/private
+          name: secret-grafana-tls
+          readOnly: false
+        - mountPath: /etc/proxy/secrets
+          name: secret-grafana-proxy
+          readOnly: false
+  ingress:
+    annotations:
+      service.beta.openshift.io/serving-cert-secret-name: grafana-tls
+    enabled: true
+    targetPort: https
+    termination: reencrypt
+  service:
+    annotations:
+      service.beta.openshift.io/serving-cert-secret-name: grafana-tls
+    ports:
+      - name: https
+        port: 9091
+        protocol: TCP
+        targetPort: https
+  serviceAccount:
+    annotations:
+      serviceaccounts.openshift.io/oauth-redirectreference.primary: >-
+        {"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"grafana-route"}}
+  configMaps:
+    - openshift-service-ca
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  namespace: example-namespace
+  name: grafana-proxy
+rules:
+  - verbs:
+      - create
+    apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+  - verbs:
+      - create
+    apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+ 
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-cluster-monitoring-binding
+  namespace: grafana
+subjects:
+  - kind: ServiceAccount
+    namespace: grafana
+    name: grafana-serviceaccount
+roleRef:
+  kind: ClusterRole
+  name: cluster-monitoring-view
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: authorization.openshift.io/v1
+kind: ClusterRoleBinding
+metadata:
+  namespace: grafana
+  name: grafana-proxy
+roleRef:
+  kind: ClusterRole
+  name: grafana-proxy
+subjects:
+  - kind: ServiceAccount
+    name: grafana-serviceaccount
+    namespace: grafana
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"
+  name: openshift-service-ca
+  namespace: grafana
+
+---
+
+apiVersion: v1
+data:
+  session_secret: Y2hhbmdlIG1lCg==
+kind: Secret
+metadata:
+  name: grafana-proxy
+  namespace: grafana
+type: Opaque
+
+---
+
+apiVersion: integreatly.org/v1alpha1
+kind: GrafanaDataSource
+metadata:
+  name: loki
+  namespace: grafana
+spec:
+  datasources:
+    - access: proxy
+      editable: false
+      secureJsonData:
+        httpHeaderValue1: infrastructure
+      name: loki
+      url: 'https://logging-loki-query-frontend-http.openshift-logging.svc:3100'
+      jsonData:
+        httpHeaderName1: X-Scope-OrgID
+        timeInterval: 5s
+        tlsSkipVerify: true
+      isDefault: true
+      version: 1
+      type: loki
+  name: loki.yaml
+
+---
+
+apiVersion: integreatly.org/v1alpha1
+kind: GrafanaDashboard
+metadata:
+  labels:
+    type: network
+  name: netobsv-dashboard
+  namespace: grafana
+spec:
+  json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": {
+              "type": "datasource",
+              "uid": "grafana"
+            },
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "target": {
+              "limit": 100,
+              "matchAny": false,
+              "tags": [],
+              "type": "dashboard"
+            },
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "gnetId": null,
+      "graphTooltip": 0,
+      "id": 9,
+      "iteration": 1660934199604,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": true,
+          "datasource": {
+            "type": "loki",
+            "uid": "P982945308D3682D1"
+          },
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "id": 19,
+          "panels": [],
+          "title": "Flows",
+          "type": "row"
+        },
+        {
+          "datasource": "loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "graph": false,
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 1
+          },
+          "id": 22,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            },
+            "tooltipOptions": {
+              "mode": "single"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum ( rate({ app=\"netobserv-flowcollector\",SrcK8S_Namespace=~\"$SrcNamespace\",DstK8S_Namespace=~\"$DstNamespace\" }[1m]))",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "title": "Total flows",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "graph": false,
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 9
+          },
+          "id": 20,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            },
+            "tooltipOptions": {
+              "mode": "single"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by(SrcK8S_Namespace) ( rate({ app=\"netobserv-flowcollector\",SrcK8S_Namespace=~\"$SrcNamespace\",DstK8S_Namespace=~\"$DstNamespace\" }[1m]))",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "title": "Flows by source namespace",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "graph": false,
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 9
+          },
+          "id": 21,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            },
+            "tooltipOptions": {
+              "mode": "single"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by(DstK8S_Namespace) ( rate({ app=\"netobserv-flowcollector\",SrcK8S_Namespace=~\"$SrcNamespace\",DstK8S_Namespace=~\"$DstNamespace\" }[1m]))",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "title": "Flows by destination namespace",
+          "type": "timeseries"
+        },
+        {
+          "collapsed": false,
+          "datasource": {
+            "type": "loki",
+            "uid": "P982945308D3682D1"
+          },
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 17
+          },
+          "id": 13,
+          "panels": [],
+          "title": "Volumetry",
+          "type": "row"
+        },
+        {
+          "datasource": "loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "graph": false,
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 18
+          },
+          "id": 10,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            },
+            "tooltipOptions": {
+              "mode": "single"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "SBHrSKs7k"
+              },
+              "expr": "sum by(SrcK8S_Namespace) ( rate({ app=\"netobserv-flowcollector\",SrcK8S_Namespace=~\"$SrcNamespace\",DstK8S_Namespace=~\"$DstNamespace\" } | json | __error__=\"\" | unwrap Bytes [1m]))",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "title": "Volumetry by source namespace",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "graph": false,
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 18
+          },
+          "id": 11,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            },
+            "tooltipOptions": {
+              "mode": "single"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "SBHrSKs7k"
+              },
+              "expr": "sum by(DstK8S_Namespace) ( rate({ app=\"netobserv-flowcollector\",SrcK8S_Namespace=~\"$SrcNamespace\",DstK8S_Namespace=~\"$DstNamespace\" } | json | __error__=\"\" | unwrap Bytes [1m]))",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "title": "Volumetry by destination namespace",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "graph": false,
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 26
+          },
+          "id": 14,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            },
+            "tooltipOptions": {
+              "mode": "single"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "SBHrSKs7k"
+              },
+              "expr": "sum by(SrcK8S_Namespace,SrcK8S_OwnerName) ( rate({ app=\"netobserv-flowcollector\",SrcK8S_Namespace=~\"$SrcNamespace\",DstK8S_Namespace=~\"$DstNamespace\",SrcK8S_OwnerName=~\"$SrcWorkload\",DstK8S_OwnerName=~\"$DstWorkload\" } | json | __error__=\"\" | unwrap Bytes [1m]))",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "title": "Volumetry by source workload",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "loki",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "graph": false,
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 26
+          },
+          "id": 17,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            },
+            "tooltipOptions": {
+              "mode": "single"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "SBHrSKs7k"
+              },
+              "expr": "sum by(DstK8S_Namespace,DstK8S_OwnerName) ( rate({ app=\"netobserv-flowcollector\",SrcK8S_Namespace=~\"$SrcNamespace\",DstK8S_Namespace=~\"$DstNamespace\",SrcK8S_OwnerName=~\"$SrcWorkload\",DstK8S_OwnerName=~\"$DstWorkload\" } | json | __error__=\"\" | unwrap Bytes [1m]))",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "title": "Volumetry by destination workload",
+          "type": "timeseries"
+        },
+        {
+          "collapsed": false,
+          "datasource": {
+            "type": "loki",
+            "uid": "P982945308D3682D1"
+          },
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 34
+          },
+          "id": 4,
+          "panels": [],
+          "title": "IPFIX logs",
+          "type": "row"
+        },
+        {
+          "datasource": "loki",
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 14,
+            "w": 24,
+            "x": 0,
+            "y": 35
+          },
+          "id": 2,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": false,
+            "sortOrder": "Descending",
+            "wrapLogMessage": false
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "hohdVVr7k"
+              },
+              "expr": "{app=\"netobserv-flowcollector\"}",
+              "queryType": "randomWalk",
+              "refId": "A"
+            }
+          ],
+          "title": "Logs",
+          "type": "logs"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 27,
+      "style": "dark",
+      "tags": [],
+      "templating": {
+        "list": [
+          {
+            "current": {
+              "selected": false,
+              "text": ".*",
+              "value": ".*"
+            },
+            "description": null,
+            "error": null,
+            "hide": 0,
+            "label": "Source namespace",
+            "name": "SrcNamespace",
+            "options": [
+              {
+                "selected": true,
+                "text": ".*",
+                "value": ".*"
+              }
+            ],
+            "query": ".*",
+            "skipUrlSync": false,
+            "type": "textbox"
+          },
+          {
+            "current": {
+              "selected": false,
+              "text": ".*",
+              "value": ".*"
+            },
+            "description": null,
+            "error": null,
+            "hide": 0,
+            "label": "Dest namespace",
+            "name": "DstNamespace",
+            "options": [
+              {
+                "selected": true,
+                "text": ".*",
+                "value": ".*"
+              }
+            ],
+            "query": ".*",
+            "skipUrlSync": false,
+            "type": "textbox"
+          },
+          {
+            "current": {
+              "selected": false,
+              "text": ".*",
+              "value": ".*"
+            },
+            "description": null,
+            "error": null,
+            "hide": 0,
+            "label": "Source workload",
+            "name": "SrcWorkload",
+            "options": [
+              {
+                "selected": true,
+                "text": ".*",
+                "value": ".*"
+              }
+            ],
+            "query": ".*",
+            "skipUrlSync": false,
+            "type": "textbox"
+          },
+          {
+            "current": {
+              "selected": false,
+              "text": ".*",
+              "value": ".*"
+            },
+            "description": null,
+            "error": null,
+            "hide": 0,
+            "label": "Dest workload",
+            "name": "DstWorkload",
+            "options": [
+              {
+                "selected": true,
+                "text": ".*",
+                "value": ".*"
+              }
+            ],
+            "query": ".*",
+            "skipUrlSync": false,
+            "type": "textbox"
+          }
+        ]
+      },
+      "time": {
+        "from": "now-5m",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "Network Observability Dashboard",
+      "uid": "_BV5h3m4k",
+      "version": 2
+    }
+
