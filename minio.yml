@@ -1,3 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: minio
+---
+
 kind: Deployment
 apiVersion: apps/v1
 metadata:
