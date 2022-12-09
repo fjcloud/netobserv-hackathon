@@ -71,9 +71,11 @@ spec:
 kind: Service
 apiVersion: v1
 metadata:
-  name: minio
+  name: s3
   namespace: minio
 spec:
+  selector:
+    app: minio
   ports:
     - name: api
       protocol: TCP
