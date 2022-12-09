@@ -42,13 +42,16 @@ spec:
     - matchExpressions:
         - {key: type, operator: In, values: ["network"]}
   config:
+    security:
+      admin_user: "admin"
+      admin_password: "grafanapass101"
     auth:
       disable_login_form: false
       disable_signout_menu: false
     auth.anonymous:
       enabled: false
     auth.basic:
-      enabled: false
+      enabled: true
     auth.proxy:
       enable_login_token: true
       enabled: true
